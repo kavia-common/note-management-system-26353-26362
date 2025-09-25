@@ -31,31 +31,56 @@ from sqlalchemy.orm import Session, relationship, sessionmaker
 # We will construct the SQLAlchemy URL from individual env variables if POSTGRES_URL is not present.
 
 def _build_db_url_from_env() -> Optional[str]:
-    host = os.getenv("POSTGRES_URL")
-    if host:
+    """
+    Construct a SQLAlchemy URL from environment variables.
+    POSTGRES_URL can be either:
+      - a full SQLAlchemy URL like postgresql+psycopg://user:pass@host:5432/db
+      - or just a hostname to be combined with POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB/POSTGRES_PORT
+    """
+    url_or_host = os.getenv("POSTGRES_URL")
+    if url_or_host:
         # If full SQLAlchemy URL provided, use it as-is
-        if host.startswith("postgresql://") or host.startswith("postgresql+psycopg://"):
-            return host
-        # Otherwise treat POSTGRES_URL as host/address and build full URL
+        if url_or_host.startswith("postgresql://") or url_or_host.startswith("postgresql+psycopg://"):
+            return url_or_host
+        # Otherwise treat POSTGRES_URL as host/address and build full URL below
+
     user = os.getenv("POSTGRES_USER")
     password = os.getenv("POSTGRES_PASSWORD")
     db = os.getenv("POSTGRES_DB")
     port = os.getenv("POSTGRES_PORT", "5432")
-    host_only = os.getenv("POSTGRES_URL") or "localhost"
-    if user and password and db:
+    host_only = url_or_host or None
+    if user and password and db and host_only:
         return f"postgresql+psycopg://{user}:{password}@{host_only}:{port}/{db}"
     return None
 
-DATABASE_URL = _build_db_url_from_env() or "sqlite:///./local_fallback.db"
 
-# Create SQLAlchemy engine
-# - For PostgreSQL we expect 'postgresql+psycopg://'
-# - For local fallback we use SQLite to keep app running without DB setup
-engine = create_engine(
-    DATABASE_URL,
-    echo=False,
-    future=True,
-)
+def _create_engine_with_fallback() -> tuple:
+    """
+    Attempt to create a PostgreSQL engine if configured; on failure, fall back to SQLite.
+    Returns (engine, database_url_used)
+    """
+    # Try configured URL first
+    db_url = _build_db_url_from_env()
+    if db_url:
+        try:
+            engine = create_engine(db_url, echo=False, future=True)
+            # Try a lightweight connection test
+            with engine.connect() as conn:
+                conn.exec_driver_sql("SELECT 1")
+            print(f"[startup] Using PostgreSQL database: {db_url.split('@')[0]}@<redacted-host>")  # avoid leaking secrets
+            return engine, db_url
+        except Exception as exc:
+            print(f"[startup][warn] Failed to connect to configured PostgreSQL URL. Falling back to SQLite. Error: {exc}")
+
+    # Fallback to SQLite for resilience so the service can still start
+    sqlite_url = "sqlite:///./local_fallback.db"
+    engine = create_engine(sqlite_url, echo=False, future=True)
+    print("[startup] Using SQLite fallback database at ./local_fallback.db")
+    return engine, sqlite_url
+
+
+# Create SQLAlchemy engine (resilient)
+engine, DATABASE_URL = _create_engine_with_fallback()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -93,7 +118,12 @@ class Note(Base):
 
 # Create tables if they don't exist (idempotent).
 # In production, use migrations. This is for initial bootstrapping.
-Base.metadata.create_all(bind=engine)
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as exc:
+    # Do not crash on startup due to migration/permission issues; log and continue.
+    # The service remains available (especially with SQLite fallback).
+    print(f"[startup][warn] Failed to run metadata.create_all: {exc}")
 
 
 # -----------------------------------------------------------------------------
@@ -206,8 +236,19 @@ app.add_middleware(
 # -----------------------------------------------------------------------------
 @app.get("/", tags=["Health"], summary="Health Check")
 def health_check():
-    """Simple health check endpoint."""
-    return {"message": "Healthy"}
+    """Simple health check endpoint with basic DB connectivity info."""
+    db_ok = True
+    db_error: Optional[str] = None
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("SELECT 1")
+    except Exception as exc:
+        db_ok = False
+        db_error = str(exc)
+    return {
+        "message": "Healthy",
+        "db": {"url_driver": DATABASE_URL.split('@')[0] if '://' in DATABASE_URL else DATABASE_URL, "ok": db_ok, "error": db_error},
+    }
 
 # PUBLIC_INTERFACE
 @app.get(
