@@ -23,3 +23,9 @@ The backend will auto-create a user for that email if one does not exist.
 ### Environment
 See notes_backend/.env.example for required variables.
 The app will fall back to a local SQLite file (local_fallback.db) if PostgreSQL env is not set, but production should use PostgreSQL.
+
+Database driver and URL notes:
+- The backend supports PostgreSQL via SQLAlchemy. The project includes psycopg v3 (psycopg[binary]) and also has psycopg2-binary available in the environment to cover legacy URLs.
+- Recommended: use a SQLAlchemy URL with the psycopg v3 driver, for example:
+  postgresql+psycopg://USER:PASSWORD@HOST:PORT/DBNAME
+- If you set POSTGRES_URL to a URL beginning with postgresql:// (defaulting to psycopg2), it will work because psycopg2-binary is present, but prefer postgresql+psycopg for consistency with the pinned dependency in requirements.txt.
