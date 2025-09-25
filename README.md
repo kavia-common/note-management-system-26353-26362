@@ -38,7 +38,12 @@ See notes_backend/.env.example for required variables.
 The app will fall back to a local SQLite file (local_fallback.db) if PostgreSQL env is not set, but production should use PostgreSQL.
 
 Database driver and URL notes:
-- The backend supports PostgreSQL via SQLAlchemy. The project includes psycopg v3 (psycopg[binary]) and also has psycopg2-binary available in the environment to cover legacy URLs.
+- The backend supports PostgreSQL via SQLAlchemy using psycopg v3.
 - Recommended: use a SQLAlchemy URL with the psycopg v3 driver, for example:
   postgresql+psycopg://USER:PASSWORD@HOST:PORT/DBNAME
-- If you set POSTGRES_URL to a URL beginning with postgresql:// (defaulting to psycopg2), it will work because psycopg2-binary is present, but prefer postgresql+psycopg for consistency with the pinned dependency in requirements.txt.
+- Multi-container default: HOST should be the database service name, not localhost. For this project use:
+  postgresql+psycopg://appuser:dbuser123@notes_database:5000/myapp
+- If you set POSTGRES_URL to a URL beginning with postgresql://, it will still work, but prefer postgresql+psycopg for consistency.
+
+Primary keys:
+- The backend uses UUID primary keys for users and notes to match the database schema. When running with SQLite fallback, UUIDs are generated client-side.

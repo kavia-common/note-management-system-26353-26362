@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -10,12 +11,12 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
-    Integer,
     String,
     Text,
     create_engine,
     func,
 )
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, relationship, sessionmaker
 
@@ -29,28 +30,38 @@ from sqlalchemy.orm import Session, relationship, sessionmaker
 #   ALLOW_ORIGINS (optional CSV for CORS)
 #
 # We will construct the SQLAlchemy URL from individual env variables if POSTGRES_URL is not present.
+# Defaults are set for the multi-container environment to point to notes_database:5000
+# using the requested credentials and database name.
 
 def _build_db_url_from_env() -> Optional[str]:
     """
     Construct a SQLAlchemy URL from environment variables.
-    POSTGRES_URL can be either:
-      - a full SQLAlchemy URL like postgresql+psycopg://user:pass@host:5432/db
-      - or just a hostname to be combined with POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB/POSTGRES_PORT
+
+    Resolution order:
+    1) If POSTGRES_URL is a full SQLAlchemy URL (postgresql:// or postgresql+psycopg://), use it as-is.
+    2) Otherwise, treat POSTGRES_URL as a host override and combine with other vars.
+    3) If individual variables are provided or missing, fall back to multi-container defaults:
+       host=notes_database, port=5000, user=appuser, password=dbuser123, db=myapp
     """
     url_or_host = os.getenv("POSTGRES_URL")
-    if url_or_host:
-        # If full SQLAlchemy URL provided, use it as-is
-        if url_or_host.startswith("postgresql://") or url_or_host.startswith("postgresql+psycopg://"):
-            return url_or_host
-        # Otherwise treat POSTGRES_URL as host/address and build full URL below
 
-    user = os.getenv("POSTGRES_USER")
-    password = os.getenv("POSTGRES_PASSWORD")
-    db = os.getenv("POSTGRES_DB")
-    port = os.getenv("POSTGRES_PORT", "5432")
-    host_only = url_or_host or None
-    if user and password and db and host_only:
-        return f"postgresql+psycopg://{user}:{password}@{host_only}:{port}/{db}"
+    # If full SQLAlchemy URL provided, use it
+    if url_or_host and (url_or_host.startswith("postgresql://") or url_or_host.startswith("postgresql+psycopg://")):
+        # Note: If someone mistakenly used localhost in a multi-container, it likely won't work.
+        # We don't forcibly rewrite, but the health endpoint will surface connectivity errors.
+        return url_or_host
+
+    # Gather from env with safe defaults for this deployment
+    user = os.getenv("POSTGRES_USER", "appuser")
+    password = os.getenv("POSTGRES_PASSWORD", "dbuser123")
+    db = os.getenv("POSTGRES_DB", "myapp")
+    port = os.getenv("POSTGRES_PORT", "5000")
+    host = url_or_host or os.getenv("POSTGRES_HOST", "notes_database")
+
+    # Build SQLAlchemy URL using psycopg v3 driver
+    if user and password and db and host and port:
+        return f"postgresql+psycopg://{user}:{password}@{host}:{port}/{db}"
+
     return None
 
 
@@ -59,12 +70,10 @@ def _create_engine_with_fallback() -> tuple:
     Attempt to create a PostgreSQL engine if configured; on failure, fall back to SQLite.
     Returns (engine, database_url_used)
     """
-    # Try configured URL first
     db_url = _build_db_url_from_env()
     if db_url:
         try:
             engine = create_engine(db_url, echo=False, future=True)
-            # Try a lightweight connection test
             with engine.connect() as conn:
                 conn.exec_driver_sql("SELECT 1")
             print(f"[startup] Using PostgreSQL database: {db_url.split('@')[0]}@<redacted-host>")  # avoid leaking secrets
@@ -93,7 +102,15 @@ Base = declarative_base()
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
+    # Use UUID as primary key. For PostgreSQL, prefer native UUID with gen_random_uuid() if available.
+    # For SQLite fallback, store as 36-char string UUID; assign client-side default.
+    id = Column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        index=True,
+        server_default=func.gen_random_uuid(),  # requires pgcrypto or pg14+ with gen_random_uuid
+        default=uuid.uuid4,  # client-side default covers SQLite fallback
+    )
     email = Column(String(254), unique=True, index=True, nullable=False)
     # In a real application, store password hashes and use proper auth flows.
     # For this demo, we use token-only auth, but keep the column for future use.
@@ -106,8 +123,14 @@ class User(Base):
 class Note(Base):
     __tablename__ = "notes"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        index=True,
+        server_default=func.gen_random_uuid(),
+        default=uuid.uuid4,
+    )
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -130,7 +153,7 @@ except Exception as exc:
 # Pydantic Schemas
 # -----------------------------------------------------------------------------
 class UserOut(BaseModel):
-    id: int = Field(..., description="User ID")
+    id: uuid.UUID = Field(..., description="User ID (UUID)")
     email: str = Field(..., description="User email")
 
     class Config:
@@ -152,7 +175,7 @@ class NoteUpdate(BaseModel):
 
 
 class NoteOut(NoteBase):
-    id: int = Field(..., description="Note ID")
+    id: uuid.UUID = Field(..., description="Note ID (UUID)")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
 
@@ -397,7 +420,7 @@ def create_note(payload: NoteCreate, current_user: User = Depends(verify_token_a
     },
 )
 def update_note(
-    note_id: int,
+    note_id: uuid.UUID,
     payload: NoteUpdate,
     current_user: User = Depends(verify_token_and_get_user),
     db: Session = Depends(get_db),
@@ -439,7 +462,7 @@ def update_note(
         404: {"description": "Note not found"},
     },
 )
-def delete_note(note_id: int, current_user: User = Depends(verify_token_and_get_user), db: Session = Depends(get_db)):
+def delete_note(note_id: uuid.UUID, current_user: User = Depends(verify_token_and_get_user), db: Session = Depends(get_db)):
     """
     Delete the specified note if owned by the authenticated user.
     """
