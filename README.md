@@ -14,11 +14,24 @@ Use an Authorization header:
   Authorization: Bearer token:<email>
 The backend will auto-create a user for that email if one does not exist.
 
+Login endpoint (for frontend compatibility):
+- POST /auth/login
+  - Request body: { "email": "<you@example.com>", "password": "<ignored>" }
+  - Response: { "access_token": "token:<email>", "token_type": "bearer", "user": { ... } }
+
 ### Endpoints
+- POST /auth/login - demo login returning a bearer token
 - GET /notes - list current user's notes
 - POST /notes - create a new note
 - PUT /notes/{id} - update a note
 - DELETE /notes/{id} - delete a note
+
+### Frontend configuration
+The frontend expects REACT_APP_API_BASE_URL to point to this backend.
+Set it to the backend base URL (no trailing slash), e.g.:
+- REACT_APP_API_BASE_URL=http://localhost:3001
+or for the running environment:
+- REACT_APP_API_BASE_URL=https://vscode-internal-13658-qa.qa01.cloud.kavia.ai:3001
 
 ### Environment
 See notes_backend/.env.example for required variables.

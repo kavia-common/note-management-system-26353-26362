@@ -160,6 +160,16 @@ class NoteOut(NoteBase):
         from_attributes = True
 
 
+class LoginRequest(BaseModel):
+    email: str = Field(..., description="User email for login")
+    password: Optional[str] = Field(None, description="Password (ignored for demo)")
+
+class TokenResponse(BaseModel):
+    access_token: str = Field(..., description="Bearer token to use in Authorization header")
+    token_type: str = Field(..., description="Token type, always 'bearer'")
+    user: UserOut = Field(..., description="Authenticated user")
+
+
 # -----------------------------------------------------------------------------
 # Auth (Demo token-based)
 # -----------------------------------------------------------------------------
@@ -215,6 +225,7 @@ app = FastAPI(
     openapi_tags=[
         {"name": "Health", "description": "Health check endpoints"},
         {"name": "Notes", "description": "CRUD operations for notes"},
+        {"name": "Auth", "description": "Authentication endpoints"},
         {"name": "Realtime", "description": "WebSocket usage information"},
     ],
 )
@@ -234,6 +245,38 @@ app.add_middleware(
 # -----------------------------------------------------------------------------
 # Routes
 # -----------------------------------------------------------------------------
+# PUBLIC_INTERFACE
+@app.post(
+    "/auth/login",
+    tags=["Auth"],
+    summary="Login (demo)",
+    description="Demo login that accepts an email and returns a bearer token 'token:<email>'. The user is auto-created if not existing.",
+    response_model=TokenResponse,
+    responses={
+        200: {"description": "Login successful"},
+        400: {"description": "Bad request"},
+    },
+)
+def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    """
+    Demo login: returns a 'token:<email>' bearer token and ensures a user exists.
+    Password is ignored in this demo.
+    """
+    email = (payload.email or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid email")
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        user = User(email=email)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    access_token = f"token:{email}"
+    return TokenResponse(access_token=access_token, token_type="bearer", user=user)
+
+
 @app.get("/", tags=["Health"], summary="Health Check")
 def health_check():
     """Simple health check endpoint with basic DB connectivity info."""
