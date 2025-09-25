@@ -4,7 +4,9 @@
 - Location: notes_backend
 - Run (example):
   - pip install -r notes_backend/requirements.txt
-  - uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+  - python notes_backend/run.py  # binds to 0.0.0.0:3001 by default (set PORT to override)
+  - # Alternative:
+  - # PORT=3001 uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT}
 - OpenAPI docs at /docs
 
 ### Auth (Demo)
