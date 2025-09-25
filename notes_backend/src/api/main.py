@@ -250,7 +250,11 @@ app.add_middleware(
     "/auth/login",
     tags=["Auth"],
     summary="Login (demo)",
-    description="Demo login that accepts an email and returns a bearer token 'token:<email>'. The user is auto-created if not existing.",
+    description=(
+        "Demo login that accepts an email and returns a bearer token 'token:<email>'. "
+        "The user is auto-created if not existing. "
+        "Alias routes are provided at '/auth/login/' (trailing slash) and '/api/auth/login' for frontend compatibility."
+    ),
     response_model=TokenResponse,
     responses={
         200: {"description": "Login successful"},
@@ -275,6 +279,44 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
     access_token = f"token:{email}"
     return TokenResponse(access_token=access_token, token_type="bearer", user=user)
+
+
+# Compatibility alias: accept trailing slash
+@app.post(
+    "/auth/login/",
+    tags=["Auth"],
+    summary="Login (demo) [alias with trailing slash]",
+    description="Alias of /auth/login to accept a trailing slash.",
+    response_model=TokenResponse,
+    responses={
+        200: {"description": "Login successful"},
+        400: {"description": "Bad request"},
+    },
+)
+def login_alias_trailing_slash(payload: LoginRequest, db: Session = Depends(get_db)):
+    """
+    Alias for /auth/login that accepts a trailing slash to prevent 404s due to client URL formatting.
+    """
+    return login(payload, db)  # delegate to main handler
+
+
+# Compatibility alias: support common '/api' prefix used by some frontends
+@app.post(
+    "/api/auth/login",
+    tags=["Auth"],
+    summary="Login (demo) [alias under /api prefix]",
+    description="Alias of /auth/login under /api prefix for frontend compatibility.",
+    response_model=TokenResponse,
+    responses={
+        200: {"description": "Login successful"},
+        400: {"description": "Bad request"},
+    },
+)
+def login_alias_api_prefix(payload: LoginRequest, db: Session = Depends(get_db)):
+    """
+    Alias for /auth/login under the '/api' prefix.
+    """
+    return login(payload, db)
 
 
 @app.get("/", tags=["Health"], summary="Health Check")
